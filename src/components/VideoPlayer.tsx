@@ -10,8 +10,13 @@ import { hlsProxyUrl, type StreamData } from '../lib/animeapi';
 import { getPrefs, savePrefs } from '../lib/localStore';
 
 interface VideoPlayerProps {
-  stream: StreamData;
+  /** Consumet / proxy stream; omit when using embedSrc */
+  stream?: StreamData | null;
+  /** vidsrc.to (or other) iframe fallback */
+  embedSrc?: string | null;
   poster?: string;
+  /** Load HLS from origin URLs without /api/hls proxy (public CDN) */
+  directHls?: boolean;
   onPlaybackProgress?: (currentTime: number, duration: number) => void;
 }
 
@@ -24,7 +29,13 @@ function formatTime(s: number): string {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerProps) => {
+export const VideoPlayer = ({
+  stream,
+  embedSrc,
+  poster,
+  directHls = false,
+  onPlaybackProgress,
+}: VideoPlayerProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -55,9 +66,9 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
   const [captionLabels, setCaptionLabels] = useState<{ idx: number; label: string }[]>([]);
   const [activeCaption, setActiveCaption] = useState(-1);
 
-  const sources = stream.sources.filter((s) => s.url);
+  const sources = stream?.sources?.filter((s) => s.url) ?? [];
   const currentSource = sources[sourceIdx] ?? null;
-  const referer = stream.headers?.Referer;
+  const referer = stream?.headers?.Referer;
 
   const tryNextSource = useCallback(() => {
     if (sourceIdx < sources.length - 1) {
@@ -122,6 +133,7 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
 
     const url = currentSource.url;
     const isHls = currentSource.isM3U8 || url.includes('.m3u8');
+    const proxiedOrDirect = (u: string) => (directHls ? u : hlsProxyUrl(u, referer));
 
     const onVol = () => {
       setVolume(video.volume);
@@ -166,7 +178,7 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
     video.addEventListener('pause', onPause);
 
     if (isHls && Hls.isSupported()) {
-      const proxiedUrl = hlsProxyUrl(url, referer);
+      const loadUrl = proxiedOrDirect(url);
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -174,7 +186,10 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
         maxMaxBufferLength: 60,
         startLevel: -1,
         xhrSetup(xhr, reqUrl) {
-          const finalUrl = reqUrl.includes('/api/hls?url=') ? reqUrl : hlsProxyUrl(reqUrl, referer);
+          const finalUrl =
+            directHls || reqUrl.includes('/api/hls?url=')
+              ? reqUrl
+              : hlsProxyUrl(reqUrl, referer);
           xhr.open('GET', finalUrl, true);
         },
       });
@@ -231,11 +246,11 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
         tryNextSource();
       });
 
-      hls.loadSource(proxiedUrl);
+      hls.loadSource(loadUrl);
       hls.attachMedia(video);
       hlsRef.current = hls;
     } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = hlsProxyUrl(url, referer);
+      video.src = proxiedOrDirect(url);
       video.addEventListener(
         'loadedmetadata',
         () => {
@@ -261,7 +276,7 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
       setLoading(false);
     }
 
-    const subs = stream.subtitles?.filter((s) => s.kind === 'captions') ?? [];
+    const subs = stream?.subtitles?.filter((s) => s.kind === 'captions') ?? [];
     const blobUrls: string[] = [];
     let cancelled = false;
     const capLabels: { idx: number; label: string }[] = [];
@@ -271,8 +286,8 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
         if (cancelled) return;
         const sub = subs[i];
         try {
-          const proxyUrl = hlsProxyUrl(sub.url, referer);
-          const resp = await fetch(proxyUrl);
+          const subUrl = directHls ? sub.url : hlsProxyUrl(sub.url, referer);
+          const resp = await fetch(subUrl);
           if (!resp.ok) continue;
           const blob = new Blob([await resp.arrayBuffer()], { type: 'text/vtt' });
           const blobUrl = URL.createObjectURL(blob);
@@ -326,7 +341,7 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
       video.load();
       if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     };
-  }, [currentSource, poster, referer, stream.subtitles, tryNextSource, onPlaybackProgress, bumpControls]);
+  }, [currentSource, poster, referer, stream?.subtitles, tryNextSource, onPlaybackProgress, bumpControls, directHls]);
 
   useEffect(() => {
     const onFs = () => setIsFullscreen(!!document.fullscreenElement);
@@ -403,6 +418,22 @@ export const VideoPlayer = ({ stream, poster, onPlaybackProgress }: VideoPlayerP
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [bumpControls]);
+
+  if (embedSrc) {
+    return (
+      <div className="space-y-3">
+        <div className="relative w-full overflow-hidden rounded-xl bg-[#08090e] shadow-[0_0_48px_-12px_rgba(255,183,197,0.22)] ring-1 ring-pink-300/15 aspect-video">
+          <iframe
+            title="Embedded video"
+            src={embedSrc}
+            className="absolute inset-0 h-full w-full border-0"
+            allowFullScreen
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (!sources.length) {
     return (

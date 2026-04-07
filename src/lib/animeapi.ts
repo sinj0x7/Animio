@@ -1,3 +1,5 @@
+import { fetchTopAiringPaged } from './consumet';
+
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
 /** Full base for HLS proxy (same as JSON API, supports VITE_API_URL=http://host:3001/api). */
@@ -97,7 +99,7 @@ async function fetchApi<T>(path: string): Promise<T> {
 }
 
 export const animeApi = {
-  topAiring: () => fetchApi<PagedResult>('/top-airing'),
+  topAiring: () => fetchTopAiringPaged(),
   spotlight: () => fetchApi<PagedResult>('/spotlight'),
   recent: () => fetchApi<PagedResult>('/recent'),
   newReleases: () => fetchApi<PagedResult>('/new-releases'),

@@ -38,6 +38,18 @@ function parseExtraHosts(raw) {
 const EXTRA_HLS_HOSTS = parseExtraHosts(process.env.HLS_ALLOWED_HOSTS);
 const ALLOWED_HOSTS = [...DEFAULT_HLS_HOSTS, ...EXTRA_HLS_HOSTS];
 
+/** Comma-separated browser origins allowed to call the API in production (e.g. GitHub Pages). */
+function parseCorsOrigins() {
+  const raw = process.env.CORS_ORIGINS;
+  if (!raw || typeof raw !== 'string') return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const CORS_ALLOWLIST = parseCorsOrigins();
+
 function isAllowedHost(hostname) {
   const h = String(hostname).toLowerCase();
   return ALLOWED_HOSTS.some(
@@ -60,7 +72,12 @@ app.use(compression());
 if (isProd) {
   app.use(
     cors({
-      origin: (origin, cb) => cb(null, !origin || origin === `http://localhost:${PORT}`),
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
+        if (origin === `http://localhost:${PORT}`) return cb(null, true);
+        return cb(null, false);
+      },
     }),
   );
 } else {

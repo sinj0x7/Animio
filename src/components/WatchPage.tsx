@@ -1,12 +1,18 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AniMedia } from '../lib/anilist';
-import type { AnimeResult } from '../lib/animeapi';
-import { animeApi, type Episode } from '../lib/animeapi';
+import type { AnimeResult, Episode } from '../lib/animeapi';
+import {
+  consumetSearch,
+  consumetInfo,
+  consumetWatch,
+  mapConsumetEpisodes,
+  mapConsumetSearchResults,
+} from '../lib/consumet';
 import { VideoPlayer } from './VideoPlayer';
 import { EpisodeList } from './EpisodeList';
 import { replaceWatchUrl } from '../lib/watchUrl';
-import { saveContinue, getPrefs, savePrefs } from '../lib/localStore';
+import { saveContinue } from '../lib/localStore';
 
 export type WatchSource =
   | { mode: 'anilist'; anime: AniMedia }
@@ -16,7 +22,7 @@ interface WatchPageProps {
   source: WatchSource;
   onBack: () => void;
   initialEpisodeId?: string | null;
-  /** Pre-selected AnimeKai id (e.g. from URL kid=) when AniList match is ambiguous */
+  /** Pre-selected gogo slug when multiple Consumet search matches (from URL kid=) */
   initialKaiOverrideId?: string | null;
 }
 
@@ -27,9 +33,7 @@ export const WatchPage = ({
   initialKaiOverrideId,
 }: WatchPageProps) => {
   const [selectedEp, setSelectedEp] = useState<Episode | null>(null);
-  const [userPickedKaiId, setUserPickedKaiId] = useState<string | null>(null);
-  const [hostIndex, setHostIndex] = useState(() => getPrefs().streamHostIndex);
-  const [watchAudio, setWatchAudio] = useState<'sub' | 'dub'>(() => getPrefs().watchAudio);
+  const [userPickedGogoId, setUserPickedGogoId] = useState<string | null>(null);
 
   const title =
     source.mode === 'anilist'
@@ -46,42 +50,32 @@ export const WatchPage = ({
       ? source.anime.coverImage.large
       : source.anime.image;
 
-  const searchTitle = source.mode === 'anilist' ? source.anime.title.romaji : null;
-  const directId = source.mode === 'animekai' ? source.anime.id : null;
-
   const searchQuery = useQuery({
-    queryKey: ['animekai-search', searchTitle],
-    queryFn: () => animeApi.search(searchTitle!),
-    enabled: source.mode === 'anilist' && !!searchTitle,
+    queryKey: ['consumet-search', title],
+    queryFn: () => consumetSearch(title),
+    enabled: title.length > 0,
     staleTime: 10 * 60 * 1000,
   });
 
-  const searchResults = searchQuery.data?.results ?? [];
-  const pickedKai = userPickedKaiId ?? initialKaiOverrideId ?? null;
-
-  const animeKaiId =
-    source.mode === 'animekai'
-      ? directId
-      : searchResults.length === 1
-        ? searchResults[0].id
-        : pickedKai;
+  const searchResults = mapConsumetSearchResults(searchQuery.data?.results ?? []);
+  const pickedGogo = userPickedGogoId ?? initialKaiOverrideId ?? null;
 
   const showMatchPicker =
-    source.mode === 'anilist' &&
-    searchQuery.isFetched &&
-    searchResults.length > 1 &&
-    !pickedKai;
+    searchQuery.isFetched && searchResults.length > 1 && !pickedGogo;
+
+  const gogoAnimeId =
+    pickedGogo ?? (searchResults.length === 1 ? searchResults[0].id : null);
 
   const infoQuery = useQuery({
-    queryKey: ['animekai-info', animeKaiId],
-    queryFn: () => animeApi.info(animeKaiId!),
-    enabled: !!animeKaiId && !showMatchPicker,
+    queryKey: ['consumet-info', gogoAnimeId],
+    queryFn: () => consumetInfo(gogoAnimeId!),
+    enabled: !!gogoAnimeId && !showMatchPicker,
     staleTime: 10 * 60 * 1000,
   });
 
   useEffect(() => {
-    const eps = infoQuery.data?.episodes;
-    if (!eps?.length) return;
+    const eps = mapConsumetEpisodes(infoQuery.data?.episodes);
+    if (!eps.length) return;
     if (initialEpisodeId) {
       const ep = eps.find((e) => e.id === initialEpisodeId);
       if (ep) {
@@ -92,70 +86,54 @@ export const WatchPage = ({
     setSelectedEp((prev) => prev ?? eps[0]);
   }, [infoQuery.data, initialEpisodeId]);
 
-  useEffect(() => {
-    if (!selectedEp) return;
-    setHostIndex(getPrefs().streamHostIndex);
-  }, [selectedEp?.id]);
-
-  const serversQuery = useQuery({
-    queryKey: ['animekai-servers', selectedEp?.id, watchAudio],
-    queryFn: () => animeApi.servers(selectedEp!.id, watchAudio),
-    enabled: !!selectedEp,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  useEffect(() => {
-    const list = serversQuery.data?.servers;
-    if (!list?.length) return;
-    setHostIndex((h) => Math.min(Math.max(0, h), list.length - 1));
-  }, [serversQuery.data?.servers, selectedEp?.id]);
-
   const streamQuery = useQuery({
-    queryKey: ['animekai-stream', selectedEp?.id, hostIndex, watchAudio],
-    queryFn: () =>
-      animeApi.watch(selectedEp!.id, { serverIndex: hostIndex, audio: watchAudio }),
-    enabled:
-      !!selectedEp &&
-      serversQuery.isSuccess &&
-      (serversQuery.data?.servers.length ?? 0) > 0,
+    queryKey: ['consumet-watch', selectedEp?.id],
+    queryFn: () => consumetWatch(selectedEp!.id),
+    enabled: !!selectedEp && !!gogoAnimeId,
+    retry: 1,
     staleTime: 5 * 60 * 1000,
   });
 
-  const streamsLoading =
-    !!selectedEp &&
-    (serversQuery.isFetching || (serversQuery.isSuccess && streamQuery.isFetching));
+  const streamsLoading = !!selectedEp && streamQuery.isFetching;
+  const hasStream = !!(streamQuery.data?.sources?.length);
 
-  const setAudio = useCallback((a: 'sub' | 'dub') => {
-    setWatchAudio(a);
-    savePrefs({ watchAudio: a });
-  }, []);
+  const vidsrcEmbed =
+    source.mode === 'anilist' &&
+    source.anime.idMal != null &&
+    source.anime.idMal > 0 &&
+    selectedEp
+      ? `https://vidsrc.to/embed/anime/${source.anime.idMal}/1/${selectedEp.number}`
+      : null;
 
-  const setHost = useCallback((i: number) => {
-    setHostIndex(i);
-    savePrefs({ streamHostIndex: i });
-  }, []);
+  const showEmbed =
+    !!vidsrcEmbed &&
+    (streamQuery.isError ||
+      (streamQuery.isFetched && !streamQuery.isFetching && !hasStream));
 
   useEffect(() => {
-    if (!selectedEp || !animeKaiId) return;
+    if (!selectedEp || !gogoAnimeId) return;
     if (source.mode === 'anilist') {
       replaceWatchUrl({
         kind: 'al',
         alId: source.anime.id,
         epId: selectedEp.id,
-        kid: pickedKai ?? undefined,
+        kid: pickedGogo ?? undefined,
       });
     } else {
-      replaceWatchUrl({ kind: 'kai', kaiId: animeKaiId, epId: selectedEp.id });
+      replaceWatchUrl({ kind: 'kai', kaiId: gogoAnimeId, epId: selectedEp.id });
     }
-  }, [selectedEp?.id, animeKaiId, pickedKai, source]);
+  }, [selectedEp?.id, gogoAnimeId, pickedGogo, source]);
 
-  const handlePickKai = useCallback((id: string) => {
-    setUserPickedKaiId(id);
-    setSelectedEp(null);
-    if (source.mode === 'anilist') {
-      replaceWatchUrl({ kind: 'al', alId: source.anime.id, kid: id });
-    }
-  }, [source]);
+  const handlePickGogo = useCallback(
+    (id: string) => {
+      setUserPickedGogoId(id);
+      setSelectedEp(null);
+      if (source.mode === 'anilist') {
+        replaceWatchUrl({ kind: 'al', alId: source.anime.id, kid: id });
+      }
+    },
+    [source],
+  );
 
   const handleEpisodeSelect = useCallback((ep: Episode) => {
     setSelectedEp(ep);
@@ -164,10 +142,10 @@ export const WatchPage = ({
 
   const handlePlaybackProgress = useCallback(
     (at: number, _dur: number) => {
-      if (!selectedEp || !animeKaiId) return;
+      if (!selectedEp || !gogoAnimeId) return;
       saveContinue({
         mode: source.mode === 'anilist' ? 'al' : 'kai',
-        kaiId: animeKaiId,
+        kaiId: gogoAnimeId,
         alId: source.mode === 'anilist' ? source.anime.id : undefined,
         epId: selectedEp.id,
         epNum: selectedEp.number,
@@ -177,10 +155,10 @@ export const WatchPage = ({
         updated: Date.now(),
       });
     },
-    [selectedEp, animeKaiId, source, title, poster],
+    [selectedEp, gogoAnimeId, source, title, poster],
   );
 
-  const episodes = infoQuery.data?.episodes ?? [];
+  const episodes = mapConsumetEpisodes(infoQuery.data?.episodes);
   const currentIdx = episodes.findIndex((e) => e.id === selectedEp?.id);
 
   const handlePrev = useCallback(() => {
@@ -192,18 +170,15 @@ export const WatchPage = ({
   }, [currentIdx, episodes, handleEpisodeSelect]);
 
   const isLoading =
-    source.mode === 'anilist'
-      ? searchQuery.isLoading || (animeKaiId ? infoQuery.isLoading : false)
-      : infoQuery.isLoading;
+    searchQuery.isLoading || (!!gogoAnimeId && infoQuery.isLoading && !infoQuery.data);
 
   const notFound =
-    source.mode === 'anilist'
-      ? searchQuery.isFetched && searchResults.length === 0
-      : infoQuery.isError || (infoQuery.isFetched && !episodes.length);
+    searchQuery.isError ||
+    (searchQuery.isFetched && searchResults.length === 0) ||
+    (!!gogoAnimeId && infoQuery.isError) ||
+    (!!gogoAnimeId && infoQuery.isFetched && !infoQuery.isLoading && episodes.length === 0);
 
-  const hasStream = !!streamQuery.data?.sources?.length;
-
-  if (source.mode === 'anilist' && showMatchPicker) {
+  if (showMatchPicker) {
     return (
       <div className="min-h-screen bg-[#0B0C10] text-white">
         <header className="sticky top-0 z-50 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-white/5">
@@ -223,14 +198,14 @@ export const WatchPage = ({
         </header>
         <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8">
           <p className="text-white/50 text-sm mb-6">
-            Multiple streaming catalog entries matched. Choose the one that matches your show.
+            Multiple catalog entries matched. Choose the one that matches your show.
           </p>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {searchResults.map((r) => (
               <button
                 key={r.id}
                 type="button"
-                onClick={() => handlePickKai(r.id)}
+                onClick={() => handlePickGogo(r.id)}
                 className="text-left rounded-xl overflow-hidden border border-white/10 hover:border-pink-400/40 transition-colors bg-black/20"
               >
                 <img src={r.image} alt="" className="w-full aspect-[3/4] object-cover" />
@@ -269,88 +244,28 @@ export const WatchPage = ({
       </header>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 space-y-6">
-        {selectedEp && serversQuery.isError && (
-          <div className="w-full rounded-xl border border-white/10 bg-white/[0.03] flex flex-col items-center justify-center gap-3 p-6">
-            <p className="text-white/45 text-sm text-center">Could not load streaming hosts.</p>
-            <button
-              type="button"
-              onClick={() => serversQuery.refetch()}
-              className="px-4 py-2 rounded-lg bg-white/10 text-white/70 text-sm hover:bg-white/20 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {selectedEp &&
-          serversQuery.isFetched &&
-          !serversQuery.isFetching &&
-          !serversQuery.isError &&
-          (serversQuery.data?.servers.length ?? 0) === 0 && (
-            <div className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4 text-center text-sm text-white/50">
-              No streaming hosts for {watchAudio === 'dub' ? 'dub' : 'sub'} on this episode. Try the other audio
-              track.
-            </div>
-          )}
-
         {streamsLoading && (
           <div className="w-full aspect-video rounded-xl bg-white/5 animate-pulse flex items-center justify-center">
             <p className="text-white/30 text-sm">Loading stream...</p>
           </div>
         )}
 
-        {selectedEp &&
-          serversQuery.isSuccess &&
-          (serversQuery.data?.servers.length ?? 0) > 0 && (
-            <section className="rounded-xl border border-white/10 bg-white/[0.04] p-3 sm:p-4 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[10px] uppercase tracking-widest text-white/35 w-full sm:w-auto">Audio</span>
-                <div className="flex rounded-lg overflow-hidden border border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => setAudio('sub')}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                      watchAudio === 'sub' ? 'bg-pink-500/30 text-white' : 'text-white/45 hover:bg-white/5'
-                    }`}
-                  >
-                    Sub
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAudio('dub')}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                      watchAudio === 'dub' ? 'bg-pink-500/30 text-white' : 'text-white/45 hover:bg-white/5'
-                    }`}
-                  >
-                    Dub
-                  </button>
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase tracking-widest text-white/35 block mb-2">Host</span>
-                <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-thin">
-                  {serversQuery.data!.servers.map((s) => (
-                    <button
-                      key={s.index}
-                      type="button"
-                      onClick={() => setHost(s.index)}
-                      className={`shrink-0 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-                        hostIndex === s.index
-                          ? 'border-pink-400/50 bg-pink-500/15 text-white'
-                          : 'border-white/10 bg-black/20 text-white/55 hover:border-white/20 hover:text-white/85'
-                      }`}
-                    >
-                      {s.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </section>
-          )}
+        {showEmbed && vidsrcEmbed && !streamsLoading && (
+          <VideoPlayer embedSrc={vidsrcEmbed} poster={poster} />
+        )}
 
-        {streamQuery.isError && selectedEp && !streamsLoading && (
+        {!showEmbed && hasStream && !streamsLoading && streamQuery.data && (
+          <VideoPlayer
+            stream={streamQuery.data}
+            poster={poster}
+            directHls
+            onPlaybackProgress={handlePlaybackProgress}
+          />
+        )}
+
+        {streamQuery.isError && selectedEp && !streamsLoading && !showEmbed && (
           <div className="w-full aspect-video rounded-xl bg-white/5 flex flex-col items-center justify-center gap-3 p-6">
-            <p className="text-white/40 text-sm text-center">Failed to load stream. Try another host or audio.</p>
+            <p className="text-white/40 text-sm text-center">Failed to load stream.</p>
             <button
               type="button"
               onClick={() => streamQuery.refetch()}
@@ -361,20 +276,12 @@ export const WatchPage = ({
           </div>
         )}
 
-        {hasStream && !streamsLoading && !streamQuery.isError && streamQuery.data && (
-          <VideoPlayer
-            stream={streamQuery.data}
-            poster={poster}
-            onPlaybackProgress={handlePlaybackProgress}
-          />
-        )}
-
         {!hasStream &&
           !streamsLoading &&
           !streamQuery.isError &&
           selectedEp &&
-          serversQuery.isSuccess &&
-          (serversQuery.data?.servers.length ?? 0) > 0 && (
+          !showEmbed &&
+          streamQuery.isFetched && (
             <div className="w-full aspect-video rounded-xl bg-white/5 flex flex-col items-center justify-center gap-2 p-6">
               <p className="text-white/40 text-sm text-center">No stream available for this episode.</p>
             </div>

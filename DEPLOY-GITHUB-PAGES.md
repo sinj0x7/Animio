@@ -28,6 +28,14 @@ Use the **public** base URL of your Node server, including `/api`, **no trailing
 
 If you omit this secret, the site still loads and **AniList** parts may work, but **AnimeKai / proxy / watch** calls will fail because they target `/api` on `github.io`, where there is no server.
 
+### CORS on your API server
+
+The Express app only allows cross-origin requests in production from origins you list. On the machine running Docker/Node, set:
+
+`CORS_ORIGINS=https://sinj0x7.github.io`
+
+(no path — the browser `Origin` header is just scheme + host). Use a comma-separated list if you have more than one site. Without this, the browser blocks API calls from GitHub Pages even when `VITE_API_URL` is correct.
+
 ## 4. Base path (usually automatic)
 
 The workflow sets `VITE_BASE_PATH` to:

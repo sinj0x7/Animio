@@ -7,6 +7,5 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-    # Optional: copy .env.example to .env on the server and uncomment:
-    # env_file:
-    #   - .env
+      # Set in a `.env` file next to this compose file (see DEPLOY-ORACLE.md).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
