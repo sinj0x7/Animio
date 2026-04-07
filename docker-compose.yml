@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    # Optional: copy .env.example to .env on the server and uncomment:
+    # env_file:
+    #   - .env

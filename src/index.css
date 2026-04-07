@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #0B0C10;
+  --color-primary: #ffffff;
+  --color-accent: #ffb7c5;
+  --color-accent2: #87ceeb;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-primary);
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    overflow-x: hidden;
+    font-family: var(--font-sans);
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Thin scrollbar for genre bar */
+.scrollbar-thin::-webkit-scrollbar {
+  height: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+/* Custom player: no native controls, readable cues */
+.animio-player video::-webkit-media-controls {
+  display: none !important;
+}
+
+.animio-player:fullscreen {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.animio-player:fullscreen video {
+  border-radius: 0;
+}
+
+.animio-player video::cue {
+  background: rgba(6, 6, 10, 0.88);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.animio-vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0%,
+    var(--color-accent) var(--vol, 100%),
+    rgba(255, 255, 255, 0.12) var(--vol, 100%)
+  );
+  cursor: pointer;
+}
+
+.animio-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 6px rgba(255, 183, 197, 0.45);
+  cursor: pointer;
+}
+
+.animio-vol-slider::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  border: none;
+  box-shadow: 0 0 6px rgba(255, 183, 197, 0.45);
+  cursor: pointer;
+}
+
+.animio-vol-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+}
