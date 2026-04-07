@@ -1,0 +1,65 @@
+# Deploy static frontend to GitHub Pages.
+# Streaming / AnimeKai need a separate API (e.g. Oracle VM). Set repository secret VITE_API_URL
+# to that API base (must be https:// when the site is served over HTTPS).
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Compute VITE_BASE_PATH
+        id: base
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          OVERRIDE: ${{ vars.VITE_BASE_PATH }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            echo "path=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          elif [ "$REPO_NAME" = "$REPO_OWNER.github.io" ]; then
+            echo "path=/" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=/$REPO_NAME/" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_BASE_PATH: ${{ steps.base.outputs.path }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
