@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AniMedia } from '../lib/anilist';
 import type { AnimeResult, Episode } from '../lib/animeapi';
@@ -26,6 +26,15 @@ interface WatchPageProps {
   initialKaiOverrideId?: string | null;
 }
 
+function malIdFromSource(source: WatchSource): number | null {
+  if (source.mode === 'anilist') {
+    const m = source.anime.idMal;
+    return m != null && m > 0 ? m : null;
+  }
+  const id = source.anime.id;
+  return /^\d+$/.test(id) ? parseInt(id, 10) : null;
+}
+
 export const WatchPage = ({
   source,
   onBack,
@@ -50,6 +59,8 @@ export const WatchPage = ({
       ? source.anime.coverImage.large
       : source.anime.image;
 
+  const malIdForVidsrc = useMemo(() => malIdFromSource(source), [source]);
+
   const searchQuery = useQuery({
     queryKey: ['consumet-search', title],
     queryFn: () => consumetSearch(title),
@@ -60,8 +71,35 @@ export const WatchPage = ({
   const searchResults = mapConsumetSearchResults(searchQuery.data?.results ?? []);
   const pickedGogo = userPickedGogoId ?? initialKaiOverrideId ?? null;
 
+  /** Public Consumet is often dead (redirects to HTML). */
+  const consumetUnusable =
+    searchQuery.isError || (searchQuery.isFetched && searchResults.length === 0);
+
+  /** Use vidsrc embeds with MAL id — no Consumet required. */
+  const vidsrcOnlyMode =
+    consumetUnusable && malIdForVidsrc != null && malIdForVidsrc > 0;
+
+  const fallbackEpCount = useMemo(() => {
+    const n = source.anime.episodes;
+    if (typeof n === 'number' && n > 0) return Math.min(n, 200);
+    return 24;
+  }, [source.anime.episodes]);
+
+  const syntheticEpisodes = useMemo((): Episode[] => {
+    if (!vidsrcOnlyMode) return [];
+    return Array.from({ length: fallbackEpCount }, (_, i) => ({
+      id: `vidsrc-ep-${i + 1}`,
+      number: i + 1,
+      title: `Episode ${i + 1}`,
+      isSubbed: true,
+    }));
+  }, [vidsrcOnlyMode, fallbackEpCount]);
+
   const showMatchPicker =
-    searchQuery.isFetched && searchResults.length > 1 && !pickedGogo;
+    !vidsrcOnlyMode &&
+    searchQuery.isFetched &&
+    searchResults.length > 1 &&
+    !pickedGogo;
 
   const gogoAnimeId =
     pickedGogo ?? (searchResults.length === 1 ? searchResults[0].id : null);
@@ -69,11 +107,35 @@ export const WatchPage = ({
   const infoQuery = useQuery({
     queryKey: ['consumet-info', gogoAnimeId],
     queryFn: () => consumetInfo(gogoAnimeId!),
-    enabled: !!gogoAnimeId && !showMatchPicker,
+    enabled: !!gogoAnimeId && !showMatchPicker && !vidsrcOnlyMode,
     staleTime: 10 * 60 * 1000,
   });
 
+  const consumetEpisodes = mapConsumetEpisodes(infoQuery.data?.episodes);
+  const episodes = vidsrcOnlyMode ? syntheticEpisodes : consumetEpisodes;
+
   useEffect(() => {
+    if (vidsrcOnlyMode) {
+      const eps = syntheticEpisodes;
+      if (!eps.length) return;
+      if (initialEpisodeId) {
+        const byId = eps.find((e) => e.id === initialEpisodeId);
+        if (byId) {
+          setSelectedEp(byId);
+          return;
+        }
+        const n = parseInt(String(initialEpisodeId).replace(/\D/g, ''), 10);
+        if (Number.isFinite(n)) {
+          const byNum = eps.find((e) => e.number === n);
+          if (byNum) {
+            setSelectedEp(byNum);
+            return;
+          }
+        }
+      }
+      setSelectedEp((prev) => prev ?? eps[0]);
+      return;
+    }
     const eps = mapConsumetEpisodes(infoQuery.data?.episodes);
     if (!eps.length) return;
     if (initialEpisodeId) {
@@ -84,34 +146,55 @@ export const WatchPage = ({
       }
     }
     setSelectedEp((prev) => prev ?? eps[0]);
-  }, [infoQuery.data, initialEpisodeId]);
+  }, [vidsrcOnlyMode, syntheticEpisodes, infoQuery.data, initialEpisodeId]);
 
   const streamQuery = useQuery({
     queryKey: ['consumet-watch', selectedEp?.id],
     queryFn: () => consumetWatch(selectedEp!.id),
-    enabled: !!selectedEp && !!gogoAnimeId,
+    enabled: !!selectedEp && !!gogoAnimeId && !vidsrcOnlyMode,
     retry: 1,
     staleTime: 5 * 60 * 1000,
   });
 
-  const streamsLoading = !!selectedEp && streamQuery.isFetching;
+  const streamsLoading = !vidsrcOnlyMode && !!selectedEp && streamQuery.isFetching;
   const hasStream = !!(streamQuery.data?.sources?.length);
 
   const vidsrcEmbed =
-    source.mode === 'anilist' &&
-    source.anime.idMal != null &&
-    source.anime.idMal > 0 &&
+    malIdForVidsrc != null &&
+    malIdForVidsrc > 0 &&
     selectedEp
-      ? `https://vidsrc.to/embed/anime/${source.anime.idMal}/1/${selectedEp.number}`
+      ? `https://vidsrc.to/embed/anime/${malIdForVidsrc}/1/${selectedEp.number}`
       : null;
 
   const showEmbed =
     !!vidsrcEmbed &&
-    (streamQuery.isError ||
-      (streamQuery.isFetched && !streamQuery.isFetching && !hasStream));
+    (vidsrcOnlyMode ||
+      streamQuery.isError ||
+      (!!selectedEp &&
+        !vidsrcOnlyMode &&
+        streamQuery.isFetched &&
+        !streamQuery.isFetching &&
+        !hasStream));
 
   useEffect(() => {
-    if (!selectedEp || !gogoAnimeId) return;
+    if (!selectedEp) return;
+    if (vidsrcOnlyMode && malIdForVidsrc) {
+      if (source.mode === 'anilist') {
+        replaceWatchUrl({
+          kind: 'al',
+          alId: source.anime.id,
+          epId: selectedEp.id,
+        });
+      } else {
+        replaceWatchUrl({
+          kind: 'kai',
+          kaiId: String(malIdForVidsrc),
+          epId: selectedEp.id,
+        });
+      }
+      return;
+    }
+    if (!gogoAnimeId) return;
     if (source.mode === 'anilist') {
       replaceWatchUrl({
         kind: 'al',
@@ -122,7 +205,7 @@ export const WatchPage = ({
     } else {
       replaceWatchUrl({ kind: 'kai', kaiId: gogoAnimeId, epId: selectedEp.id });
     }
-  }, [selectedEp?.id, gogoAnimeId, pickedGogo, source]);
+  }, [selectedEp?.id, gogoAnimeId, pickedGogo, source, vidsrcOnlyMode, malIdForVidsrc]);
 
   const handlePickGogo = useCallback(
     (id: string) => {
@@ -142,10 +225,12 @@ export const WatchPage = ({
 
   const handlePlaybackProgress = useCallback(
     (at: number, _dur: number) => {
-      if (!selectedEp || !gogoAnimeId) return;
+      if (!selectedEp) return;
+      const kaiKey = vidsrcOnlyMode && malIdForVidsrc ? String(malIdForVidsrc) : gogoAnimeId;
+      if (!kaiKey) return;
       saveContinue({
         mode: source.mode === 'anilist' ? 'al' : 'kai',
-        kaiId: gogoAnimeId,
+        kaiId: kaiKey,
         alId: source.mode === 'anilist' ? source.anime.id : undefined,
         epId: selectedEp.id,
         epNum: selectedEp.number,
@@ -155,10 +240,9 @@ export const WatchPage = ({
         updated: Date.now(),
       });
     },
-    [selectedEp, gogoAnimeId, source, title, poster],
+    [selectedEp, gogoAnimeId, source, title, poster, vidsrcOnlyMode, malIdForVidsrc],
   );
 
-  const episodes = mapConsumetEpisodes(infoQuery.data?.episodes);
   const currentIdx = episodes.findIndex((e) => e.id === selectedEp?.id);
 
   const handlePrev = useCallback(() => {
@@ -170,13 +254,15 @@ export const WatchPage = ({
   }, [currentIdx, episodes, handleEpisodeSelect]);
 
   const isLoading =
-    searchQuery.isLoading || (!!gogoAnimeId && infoQuery.isLoading && !infoQuery.data);
+    !vidsrcOnlyMode &&
+    (searchQuery.isLoading || (!!gogoAnimeId && infoQuery.isLoading && !infoQuery.data));
 
   const notFound =
-    searchQuery.isError ||
-    (searchQuery.isFetched && searchResults.length === 0) ||
-    (!!gogoAnimeId && infoQuery.isError) ||
-    (!!gogoAnimeId && infoQuery.isFetched && !infoQuery.isLoading && episodes.length === 0);
+    !vidsrcOnlyMode &&
+    (searchQuery.isError ||
+      (searchQuery.isFetched && searchResults.length === 0) ||
+      (!!gogoAnimeId && infoQuery.isError) ||
+      (!!gogoAnimeId && infoQuery.isFetched && !infoQuery.isLoading && consumetEpisodes.length === 0));
 
   if (showMatchPicker) {
     return (
@@ -244,6 +330,12 @@ export const WatchPage = ({
       </header>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 space-y-6">
+        {vidsrcOnlyMode && selectedEp && (
+          <p className="text-[11px] text-amber-200/50 text-center">
+            Stream API unavailable — using embed player (episode list is approximate).
+          </p>
+        )}
+
         {streamsLoading && (
           <div className="w-full aspect-video rounded-xl bg-white/5 animate-pulse flex items-center justify-center">
             <p className="text-white/30 text-sm">Loading stream...</p>
@@ -263,7 +355,7 @@ export const WatchPage = ({
           />
         )}
 
-        {streamQuery.isError && selectedEp && !streamsLoading && !showEmbed && (
+        {streamQuery.isError && selectedEp && !streamsLoading && !showEmbed && !vidsrcOnlyMode && (
           <div className="w-full aspect-video rounded-xl bg-white/5 flex flex-col items-center justify-center gap-3 p-6">
             <p className="text-white/40 text-sm text-center">Failed to load stream.</p>
             <button
@@ -281,7 +373,8 @@ export const WatchPage = ({
           !streamQuery.isError &&
           selectedEp &&
           !showEmbed &&
-          streamQuery.isFetched && (
+          streamQuery.isFetched &&
+          !vidsrcOnlyMode && (
             <div className="w-full aspect-video rounded-xl bg-white/5 flex flex-col items-center justify-center gap-2 p-6">
               <p className="text-white/40 text-sm text-center">No stream available for this episode.</p>
             </div>
@@ -295,6 +388,9 @@ export const WatchPage = ({
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
             <p className="text-white/40 text-sm text-center">Could not find streaming data for this anime.</p>
+            <p className="text-white/25 text-xs text-center max-w-sm px-4">
+              This title may have no MAL link on AniList, or the catalog search failed. Try another show or link the title on MAL in AniList.
+            </p>
             <button type="button" onClick={onBack} className="mt-1 px-5 py-2 rounded-xl bg-white/10 text-white/80 text-sm hover:bg-white/20 transition-colors">
               Go Back
             </button>
